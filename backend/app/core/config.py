@@ -5,7 +5,8 @@ class Settings(BaseSettings):
     # the app will crash immediately with a clear error.
     PROJECT_NAME :str = "InsightEngine"
     DATABASE_URL :str
-    REDIS_URL :str = "redis://localhost:6379/0"
+    REDIS_URL :str 
+    # = "redis://localhost:6379/0"
     ENVIRONMENT: str = "development"
     # Security (We'll use this later for JWT)
     SECRET_KEY: str 

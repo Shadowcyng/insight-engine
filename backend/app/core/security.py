@@ -3,6 +3,7 @@ import jwt
 from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 import secrets
+import hashlib
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -42,3 +43,12 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
 def create_refresh_token() -> str:
     """Generates a secure, random opaque token for session management."""
     return secrets .token_urlsafe(64)
+
+
+def generate_reset_token() -> str:
+    """Generates a secure, 64-character URL-safe token."""
+    return secrets.token_urlsafe(64)
+
+def hash_reset_token(token: str) -> str:
+    """Creates a fast, secure SHA-256 hash of the plain-text token."""
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()

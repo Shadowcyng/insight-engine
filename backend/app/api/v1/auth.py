@@ -1,96 +1,139 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie
+from fastapi import APIRouter, Depends, HTTPException, status,Request, Response, Cookie
 from fastapi.security import OAuth2PasswordRequestForm
 from app.db.session import get_db
 from app.schemas.user import UserCreate, UserResponse, Token
 from app.services import user_service
 from app.core import security
-from app.api.deps import DbSession, DbSession
+from app.api.deps import DbSession, RateLimitPerIP, rate_limit_endpoint_per_ip
 from app.core.config import settings
 from app.core.redis import redis_client
+import structlog
+from pydantic import BaseModel, EmailStr
+from app.core.security import generate_reset_token, hash_reset_token
 
+
+log = structlog.get_logger()
 router = APIRouter()
 
-@router.post("/signup", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def signup(user: UserCreate, db: DbSession):
-    # 1. Check if email is already taken
-    existing_user = user_service.get_user_by_email(db, email=user.email)
-    if existing_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A user with this email already exists.")
-    
-    # Create a user
-    new_user = user_service.create_user(db, user)
-    return new_user
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
-@router.post("/login", response_model=Token)
+@router.post("/signup", response_model=UserResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit_endpoint_per_ip)])
+def signup(user: UserCreate, db: DbSession, _rate_limit: RateLimitPerIP):
+    log.info("signup_request_received", email=user.email)
+    try:
+        # 1. Check if email is already taken
+        existing_user = user_service.get_user_by_email(db, email=user.email)
+        if existing_user:
+            log.warning("signup_email_already_exists", email=user.email)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A user with this email already exists.")
+        
+        # Create a user
+        new_user = user_service.create_user(db, user)
+        log.info("user_signup_successful", user_id=new_user.id, email=user.email)
+        return new_user
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("signup_failed", email=user.email, error=str(e))
+        raise HTTPException(status_code=500, detail="Signup failed")
+
+@router.post("/login", response_model=Token, dependencies=[Depends(rate_limit_endpoint_per_ip)])
 async def login(response: Response, db: DbSession, form_data: OAuth2PasswordRequestForm = Depends()):
-    # OAuth2PasswordRequestForm expects 'username' and 'password' from the frontend (as form data, not JSON)
+    log.info("login_request_received", email=form_data.username)
+    try:
+        access_token, refresh_token, exp_seconds = await user_service.authenticate_user_and_create_session(
+            db=db, 
+            email=form_data.username, 
+            password=form_data.password
+        )
+        
+        # Router only handles HTTP specific tasks (like cookies)
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=True,
+            secure=False, 
+            samesite="lax",
+            max_age=exp_seconds
+        )
+        
+        log.info("login_successful", email=form_data.username)
+        return {"access_token": access_token, "token_type": "bearer"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("login_failed", email=form_data.username, error=str(e))
+        raise HTTPException(status_code=500, detail="Login failed")
 
-    # Find user (FastAPI calls the field 'username', but we map it to our 'email')
-    user = user_service.get_user_by_email(db, email=form_data.username)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials." )
-    
-    # Verify password
-    if not security.verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials." )
-    
-    # Generate JWT token
-    access_token = security.create_access_token(data={"sub": str(user.id), "email": (user.email), "is_active": (user.is_active)})
-    refresh_token = security.create_refresh_token()
-    # 2. Store the Refresh Token in Redis (Whitelist)
-    # Key: refresh_token:<the_token_string>, Value: user_id
-    redis_key = f"refresh_token:{refresh_token}"
-    expiration_seconds = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
-    await redis_client.setex(name=redis_key, time=expiration_seconds, value=str(user.id))
-    # 3. Set the HttpOnly Cookie
-    # HttpOnly=True prevents XSS attacks (React cannot read it)
-    # Secure=True ensures it only sends over HTTPS (disable temporarily if testing without localhost HTTPS)
-    # SameSite='lax' protects against CSRF attacks
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        secure=False, # Set to True in production!
-        samesite="lax",
-        max_age=expiration_seconds
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@router.post("/refresh")
+@router.post("/refresh", dependencies=[Depends(rate_limit_endpoint_per_ip)])
 async def refresh_token(
     # We explicitly look for the 'refresh_token' cookie
-    refresh_token: str | None = Cookie(default=None)
+    db: DbSession,
+    refresh_token: str | None = Cookie(default=None),
 ):
+    log.info("refresh_token_request_received")
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Refresh token missing")
         
-    redis_key = f"refresh_token:{refresh_token}"
-    
-    # 1. Check if the token exists in Redis
-    user_id = await redis_client.get(redis_key)
-    
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    try:
+        new_access_token = await user_service.refresh_user_session(db, refresh_token)
+        log.info("refresh_token_successful")
+        return {"access_token": new_access_token, "token_type": "bearer"}
         
-    # 2. Generate a NEW Access Token
-    new_access_token = security.create_access_token(data={"sub": user_id})
-    
-    # (Optional Enterprise Step: Token Rotation)
-    # You could delete the old refresh token here and issue a new one to prevent replay attacks.
-    # For now, we keep the session alive until the 7 days expire.
-    
-    return {"access_token": new_access_token, "token_type": "bearer"}
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
 
-@router.post("/logout")
+@router.post("/logout", dependencies=[Depends(rate_limit_endpoint_per_ip)])
 async def logout(
     response: Response,
     refresh_token: str | None = Cookie(default=None)
 ):
-    if refresh_token:
-        # 1. Delete from Redis (Revoke access)
-        await redis_client.delete(f"refresh_token:{refresh_token}")
+    log.info("logout_request_received")
+    
+    # Revoke in Redis
+    await user_service.revoke_user_session(refresh_token)
         
-    # 2. Instruct the browser to delete the cookie
+    # Clear HTTP cookie
     response.delete_cookie(key="refresh_token")
+    log.info("logout_successful")
     
     return {"detail": "Successfully logged out"}
+@router.post("/forgot-password", status_code=202)
+async def request_password_reset(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    db: DbSession
+):
+    # 1. Route extracts HTTP data
+    client_ip = request.client.host if request.client else "Unknown"
+    
+    # 2. Route calls Service
+    user = user_service.get_user_by_email(db, email=payload.email)
+    
+    if user:
+        plain_token = user_service.create_password_reset_token(db, user, client_ip)
+        
+        # In the future, your email dispatch logic goes here
+        print(f"\n[EMAIL MOCK] Link: http://localhost:3000/reset-password?token={plain_token}\n")
+    
+    # 3. Route formats HTTP response
+    return {"detail": "If that email exists, a reset link has been sent."}
+
+
+@router.post("/reset-password")
+async def execute_password_reset(
+    payload: ResetPasswordRequest,
+    db:DbSession
+):
+    try:
+        # Route passes data to the Service
+        user_service.execute_password_reset(db, payload.token, payload.new_password)
+        return {"detail": "Password has been successfully reset."}
+        
+    except ValueError as e:
+        # Route catches pure Python errors and translates them into HTTP errors
+        raise HTTPException(status_code=400, detail=str(e))

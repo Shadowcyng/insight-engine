@@ -1,4 +1,5 @@
 services:
+
   db:
     image: postgres:16-alpine
     container_name: ie_postgres
@@ -20,6 +21,64 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+
+  # -------------------------------------
+  # 2. APPLICATION LAYER
+  # -------------------------------------
+
+  api:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    # Notice we use 'expose' instead of 'ports'. 
+    # This hides FastAPI from the public internet. It can only be reached by Nginx.
+    expose:
+      - "8000" 
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - db
+      - redis
+    # This spins up 3 independent Python processes to utilize multiple CPU cores!
+    deploy:
+      replicas: 3
+
+  
+  # -------------------------------------
+  # 4. BACKGROUND WORKER LAYER
+  # -------------------------------------
+  worker:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ie_celery_worker
+    # 1. Override the Dockerfile CMD
+    # Instead of running Uvicorn, we tell this container to boot up Celery
+    command: ["uv", "run", "celery", "-A", "app.worker.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    env_file:
+      - ./backend/.env
+    # 2. Boot Order
+    # The worker must wait for the database and the Redis message broker to be online
+    depends_on:
+      - db
+      - redis
+    # 3. Prevent Auto-Restart Loops on failure during active development
+    restart: on-failure
+
+  # -------------------------------------
+  # 3. ROUTING LAYER (LOAD BALANCER)
+  # -------------------------------------
+  nginx:
+    image: nginx:latest
+    container_name: ie_nginx
+    ports:
+      # This is the ONLY port open to the outside world.
+      - "80:80" 
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+
 volumes:
   db_data:
   redis_data:
