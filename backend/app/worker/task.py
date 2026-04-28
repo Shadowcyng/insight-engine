@@ -74,6 +74,7 @@ def process_data_file(self, record_id: int, file_path: str):
         if record:
             record.status = "failed" # IT NOW FAILS CORRECTLY!
             db.commit()
+            
         raise e 
     finally:
         db.close()

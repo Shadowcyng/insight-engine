@@ -6,6 +6,7 @@ from groq import Groq
 from app.core.config import settings
 from app.services.llm_service import llm
 import structlog
+from typing import List,  Dict, Any
 
 log = structlog.get_logger()
 
@@ -192,3 +193,25 @@ def process_file_with_ai(file_path: str) -> str:
     except Exception as e:
         log.error("process_file_with_ai_failed", file_path=file_path, error=str(e))
         raise
+
+def execute_duckdb_queries(queries: List[str], file_path: str) -> List[Dict[str, Any]]:
+    """
+    Executes analytical queries directly against a CSV file path.
+    """
+    results = []
+    # Minor comment: DuckDB allows querying the file path directly using 'read_csv_auto'
+    try:
+        with duckdb.connect(database=':memory:') as con:
+            # We create a view named 'df' so the LLM doesn't have to deal with long paths
+            con.execute(f"CREATE VIEW df AS SELECT * FROM read_csv_auto('{file_path}')")
+            
+            for query in queries:
+                log.info("executing_duckdb_query", query=query)
+                # fetchdf() gets a pandas-like dataframe, to_dict converts it to JSON
+                df = con.execute(query).fetchdf()
+                results.append(df.to_dict(orient="records"))
+                
+        return results
+    except Exception as e:
+        log.error("duckdb_execution_failed", error=str(e))
+        return [{"error": str(e)}]

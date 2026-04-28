@@ -1,9 +1,22 @@
 from app.db.session import SessionLocal
 from app.models.user import User, Role, Permission
+from app.core.security import get_password_hash
 
 def seed_database():
     db = SessionLocal()
     try:
+        user = db.query(User).filter(User.email == "stmsinghania@gmail.com").first()
+        print("User", user)
+        if not user:
+            new_user = User(
+                email="stmsinghania@gmail.com",
+                hashed_password=get_password_hash("Shadowcyng@123"),
+                is_active=True
+            )
+            db.add(new_user)
+            db.commit()
+            print("Seed complete: User created.")
+
         # 1. Create the Permission
         perm_delete = db.query(Permission).filter(Permission.name == "uploads:delete").first()
         if not perm_delete:
@@ -50,5 +63,12 @@ def seed_database():
     finally:
         db.close()
 
+
+
 if __name__ == "__main__":
     seed_database()
+
+
+
+    #  docker-compose exec api /app/.venv/bin/alembic stamp head    
+    # docker-compose exec api /app/.venv/bin/python seed_rbac.py        

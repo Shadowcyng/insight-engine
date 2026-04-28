@@ -4,7 +4,7 @@ from app.db.session import get_db
 from app.schemas.user import UserCreate, UserResponse, Token
 from app.services import user_service
 from app.core import security
-from app.api.deps import DbSession, RateLimitPerIP, rate_limit_endpoint_per_ip
+from app.api.deps import DbSession, RateLimitPerIP, rate_limit_endpoint_per_ip, CurrentUser
 from app.core.config import settings
 from app.core.redis import redis_client
 import structlog
@@ -45,7 +45,7 @@ def signup(user: UserCreate, db: DbSession, _rate_limit: RateLimitPerIP):
 async def login(response: Response, db: DbSession, form_data: OAuth2PasswordRequestForm = Depends()):
     log.info("login_request_received", email=form_data.username)
     try:
-        access_token, refresh_token, exp_seconds = await user_service.authenticate_user_and_create_session(
+        access_token, refresh_token, exp_seconds, user = await user_service.authenticate_user_and_create_session(
             db=db, 
             email=form_data.username, 
             password=form_data.password
@@ -62,7 +62,7 @@ async def login(response: Response, db: DbSession, form_data: OAuth2PasswordRequ
         )
         
         log.info("login_successful", email=form_data.username)
-        return {"access_token": access_token, "token_type": "bearer"}
+        return {"user_data": user ,"access_token": access_token, "token_type": "bearer"}
     except HTTPException:
         raise
     except Exception as e:
@@ -80,9 +80,9 @@ async def refresh_token(
         raise HTTPException(status_code=401, detail="Refresh token missing")
         
     try:
-        new_access_token = await user_service.refresh_user_session(db, refresh_token)
+        new_access_token, user = await user_service.refresh_user_session(db, refresh_token)
         log.info("refresh_token_successful")
-        return {"access_token": new_access_token, "token_type": "bearer"}
+        return {"access_token": new_access_token, "token_type": "bearer", "user": user}
         
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
@@ -137,3 +137,16 @@ async def execute_password_reset(
     except ValueError as e:
         # Route catches pure Python errors and translates them into HTTP errors
         raise HTTPException(status_code=400, detail=str(e))
+    
+@router.get("/me")
+def get_user_session(current_user: CurrentUser):
+    # Minor comment: If the code reaches here, the dependency successfully verified the cookie
+    
+    # Minor comment: Return the exact shape our React authStore.ts is expecting
+    return {
+        "user": {
+            "id": current_user.db_user.id, # Usually the user ID
+            "email": current_user.db_user.email,
+            "role": current_user.db_user.role
+        }
+    }

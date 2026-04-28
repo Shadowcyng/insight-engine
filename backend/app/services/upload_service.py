@@ -1,14 +1,16 @@
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
 from app.models.upload import DataUpload
-from utils.constants import STORAGE_DIR
 import os
 import shutil
 import structlog
+from pathlib import Path
 
 log = structlog.get_logger()
 
 # Our local "S3 Bucket" equivalent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+STORAGE_DIR = os.path.join(BASE_DIR, "storage")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
 

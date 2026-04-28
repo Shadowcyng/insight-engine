@@ -19,4 +19,4 @@ COPY . .
 RUN uv sync --frozen --no-cache --no-install-project
 
 
-CMD ["uv", "run","uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run","uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", "--interface", "asgi3"]

@@ -67,7 +67,7 @@ async def authenticate_user_and_create_session(db: Session, email: str, password
     redis_key = f"refresh_token:{refresh_token}"
     await redis_client.setex(name=redis_key, time=expiration_seconds, value=str(user.id))
     
-    return access_token, refresh_token, expiration_seconds
+    return access_token, refresh_token, expiration_seconds, user
 
 async def refresh_user_session(db: Session, refresh_token: str) -> str:
     redis_key = f"refresh_token:{refresh_token}"
@@ -92,13 +92,14 @@ async def refresh_user_session(db: Session, refresh_token: str) -> str:
         "scopes": user_scopes
     }
     
-    return create_access_token(data=new_jwt_data)
+    token =  create_access_token(data=new_jwt_data)
+    return token, user
 
 
 async def revoke_user_session(refresh_token: str) -> None:
     if refresh_token:
         await redis_client.delete(f"refresh_token:{refresh_token}")
-        
+
 def create_password_reset_token(db: Session, user: User, client_ip: str) -> str:
     """Generates a token, hashes it, saves the audit record, and returns the plain text."""
     plain_token = generate_reset_token()

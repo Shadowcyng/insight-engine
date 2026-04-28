@@ -5,6 +5,7 @@ import os
 from app.core.config import settings
 from utils.constants import LOGGING_DIR
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 def add_global_info(logger, method_name, event_dict):
     """
@@ -19,8 +20,11 @@ def add_global_info(logger, method_name, event_dict):
 def setup_logging():
     """Configures JSON structured logging for the entire app."""
     # 2. Ensure the log directory exists
-    log_dir = LOGGING_DIR
-    os.makedirs(log_dir, exist_ok=True)
+    BASE_DIR = Path(__file__).resolve().parent.parent.parent
+    LOGGING_DIR = os.path.join(BASE_DIR, "logs")
+
+# Ensure it exists
+    os.makedirs(LOGGING_DIR, exist_ok=True)
 
     # 3. Setup the standard Python logging root
     root_logger = logging.getLogger()
@@ -40,7 +44,7 @@ def setup_logging():
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=logging.INFO)
 
     file_handler = RotatingFileHandler(
-        filename=os.path.join(log_dir, "insight_engine.log"),
+        filename=os.path.join(LOGGING_DIR, "insight_engine.log"),
         maxBytes=10_485_760, 
         backupCount=5
     )

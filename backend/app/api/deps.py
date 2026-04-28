@@ -14,6 +14,10 @@ from dataclasses import dataclass
 class AuthenticatedUser:
     db_user: User
     scopes: list[str]
+    
+    class Config:
+        # Minor comment: Allows Pydantic to work with SQLAlchemy objects
+        from_attributes = True
 
 # This tells Swagger UI where the login endpoint is, 
 # so the "Authorize" button knows where to send the credentials.
@@ -38,6 +42,13 @@ def get_current_user(token: TokenDep, db: DbSession) -> AuthenticatedUser:
         token_scopes: list = payload.get("scopes",[])
         if user_id is None:
             raise credentials_exception
+    except jwt.ExpiredSignatureError:
+        # Minor comment: This specific error triggers our React Axios interceptor
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+    
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    
     except jwt.PyJWTError as e:
         raise credentials_exception
     
